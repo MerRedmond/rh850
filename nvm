@@ -11,3 +11,99 @@ Data Flash：可以由多个物理扇区组成，我们也称物理扇区为BANK
 所需要写入的数据会最终写入到物理扇区中，一个物理扇区写满了就需要新的物理扇区，但是物理扇区是有限的，
 不能一直有新的BANK，针对同一个数据如果多次写入，其实对于程序而言只有最后一次是有效的，
 因此如何擦除无用数据并循环使用物理扇区就是解决这个问题的关键，这就是FEE换页机制。
+
+
+
+NvM 模块
+Memory Service 通过将数据元素抽象成Block 进行统一管理，NvM所有的功能都是以Block为单元。NvM管理的Block包含:
+
+Ram Block : 位于 RAM 中， 存放应用待读/待写的数据
+Rom Block : 位于 PFlash 中，存放 Block 默认数据， 用于数据读取失败后恢复默认数据
+Administrative Block：位于 RAM 中，保存所有Data Block 的错误/状态/Crc 等信息
+NV Block: 位于非易失性存储器中， 用于保存非易失数据
+
+
+1. Block 分类
+NvM 包 含 3 种 Block 类 型 ：
+NVM_BLOCK_NATIVE
+NVM_BLOCK_REDUNDANT
+NVM_BLOCK_DATASET。
+每种类型的 Block 都由 NV Block、 RAM Block、 ROM Block 及 Administrative Block 等基本存储对象组成。
+NVM_BLOCK_REDUNDANT 类型的 Block 包含两个 NV Block， 且两 NV Block 中保存的数据互为备份， 提高了数据安全性。
+NVM_BLOCK_DATASET 类型的 Block 可根据需求配置多个 NV Block 或 ROM Block 并通过索引选择操作对象， 提高了系统的灵活性。
+
+2. Block 数据结构
+虽然NvM中存在这么多类型的Block,但是在存储介质中实际存在的只有NV Block, Ram Block 和Rom 都不参与实际的写入过程。
+
+一般来说NV Block 由Block Header + Block Data +Block CRC组成，其中Block Header会包含Block ID，用于写入/读取时校验
+
+
+3. Block 任务分发
+NvM 对NV Block的操作是独立于硬件，在NvM模块中无法直接写入对应的存储介质中。
+NvM通过识别Block的配置参数，确定当前操作的Block的下属模块，再将任务下发给MemIf模块。
+当前操作的Block完成Job后，即可进行下一个Job操作
+
+
+
+3.1. Block 任务队列以及Block 优先级
+
+3.1.1. 任务队列
+
+NvM 对Block进行读写操作，对于存储介质来说都是异步的。因此对于NvM是可以同时发起多个Block的读写操作（NvM_ReadAll/ NvM_WriteAll）。
+但是对于存储介质来说，当前操作的Block没有完成，无法接收下一个操作任务。因此NvM通过任务队列，同时结合回调函数或者轮询当前操作Job的状态（可配置），完成对多Block的任务管理。
+3.1.2. 优先级 & Immdieta Job
+
+NvM 提供两种任务队列， 一种为 FCFS(First Come First Serve ) 队列即先发出的请求会先被执行， 
+另一种为优先级队列即高优先级的请求会先被执行。启用 NvMJobPrioritization 时， NvM 使用优先级队列。
+Block 的优先级范围为 0…255，数值越小优先级越高。禁用 NvMJobPrioritization 时， NvM 使用 FCFS 队列。
+
+
+4. Block 虚拟地址映射
+NvM 通过 32 位的虚拟地址访问 Fee 及 Ea 模块， 16 位为 Block 地址偏移， 16 位为 Block Number。Block Number 分为 Block Base Number 及 Data Index 两部分， 
+二者的位数占比由配置 NvMDatasetSelectionBits 决定。Block Base Number 为(16–NvMDatasetSelectionBits)位， Data Index 为 NvMDatasetSelectionBits 位。
+当NvMDatasetSelectionBits 配置为 2 时， Block Number 如下图所示。
+
+注意
+不管是FEE还是EA，NvM的Block的地址映射都是NvM Block ID与 Fee/EA Block ID的映射，实际的写入地址都是由FEE/EA决定的
+Fee Block在NV Memory 的排布顺序，与Block ID无关，只与写入的先后顺序有关
+Fee Block ID不一定是连续的,但是NvM Block ID是连续的，因为两者的ID映射关系，因此允许Fee Block ID不连续
+
+
+5. 数据校验&Redunant
+NvM 提供了多种校验方式
+
+校验Block Header中的Block ID
+校验 根据Block Header 以及Block Data 计算的CRC
+当数据校验发生错误时，NvM存在以下几种方式去修复故障
+
+Read Retry
+NvM配置参数中NVM_MAX_NUM_OF_READ_RETRIES 定义了最大的尝试次数
+
+
+读取Redunant Block的备份数据
+如果Block 属性是Redunant Block，那么当Read Block发生错误时，将会从备份Block读取数据恢复数据
+
+
+
+ MemIf 模块
+
+mory Abstraction Interface (MemIf)作为接口抽象层， 为 NvM 提供访问 Fee/Ea 模块的函数，NvM借此抽象成硬件无关的模块。
+
+MemIf 通过Device Id将Fee 与EA 的相关接口抽象成MemIf接口供NvM访问
+
+
+1. Device & Api管理
+
+MemIf 可以同时管理EA 和FEE，通过NvM Block 的 DeviceId 配置属性，进行识别，在访问对应的Device Api
+EA 的Device ID 0
+Fee 的Device ID 1
+
+
+
+
+
+
+
+
+
+
