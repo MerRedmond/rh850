@@ -1,3 +1,4 @@
+
 在TC397芯片部署AUTOSAR，存储模块软件架构分层依次是：
 NVM->MemIf->Fee->FLS->FLASH(TC397上使用的方案)
 NVM是存储服务层，也就是存储模块最上层，该层是对外提供的接口。
@@ -100,10 +101,66 @@ Fee 的Device ID 1
 
 
 
+Fee 模块
+Fee(Flash Eeprom Emulation), 顾名思义就是Flash 模拟Eeprom. 那么为何不直接使用Eeprom，或者说Flash为什么需要模拟Eeprom.
+
+Flash 与 EEP 都属于非易失存储器（Non-Valatile Memory），主要存在以下几点区别
+
+成本
+同样的存储空间，EEP比Flash贵上许多，因此一般MCU上Flash空间要比EEPROM 空间大
+擦写方式
+Flash 以Page为单位，擦除的时候 必须按照Page 为单位擦住，同时写入的时候，只能写1，也就是由0->1，因此如果要改写某个Page的一个Byte,那么必须先将Page的内容全部读到Ram,然后改写Ram中对应的变量，然后擦除该Page,最后把Ram修改后的值写入到Page，也就是需要以下三步：
+读->改->写
+
+Eeprom 支持按照Byte直接修改Fee,就是将Flash的写入操作，通过软件的模拟成EEP.
+
+1. 模拟EEP写入方式
+Fee 通过 Fls 模块操作 DataFlash， DataFlash 具有如下物理特性：
+
+按页写入， 写数据需为物理页的整数倍， 否则需做字节补齐。
+写入前需确保此段空间未被写入过数据， 否则需要擦除后再写入数据。
+最小擦除单位为整个物理扇区。
+Fee 的写入单元是Block,Fee Block 是继承自NvM Block，在NvM Block 数据的基础上加上Fee Block Header数据，形成Fee Block。
+
+Fee 写入Block 按照先写入，地址就靠前的原则，下次写入Block 就依次往后排。这样确保每次写入都不需要擦除。
+
+2. Fee翻页机制
+Fee 通过对Flash空间整体划分为两个逻辑Sector, 一个作为Active Sector,一个作为Inactive Sector。这两个Sector 由一个或者多个物理Sector组成。
+
+在任意时间，只能有一个Logical Sector在作为 Active Sector只有当Active Sector，如何写入下一个Block,或者达到配置的剩余空间，那么就会进行翻页操作。翻页操作一般会经历如下几个步骤
+
+将所有Block的最新数据写入到Inactive Sertor
+擦除Active，设置Inactive Sector为Active
+注意，这里翻页操作时，并没有将所有的数据都由Active Sector搬运到Inactive Sector，而是将所有Block的最新数据搬运到Inactive Sector
+
+3. Fee 初始化读取地址
+Fee 提供地址管理机制，Fee 会在Ram中实施记录所有Block的当前地址和状态，在Block写入新的数据时，又会更新这个地址。这些地址主要用于Fee读取Block数据。
+
+在Fee进行初始化之前，这些Block地址是未知的，因此需要在Fee 初始化阶段，需要从Flash 遍历得到当前Blcok的地址。
+
+由下图可知，Fee写入是在Active Sector 中依次往下排布的，因此在最新的Block 数据往往在Active Sector的底部。
+
+4. Fee 写入Block 管理
+通过 Block 头信息中的有效标识位字段可以判断当前的扇区及 Block 是否有效。
+
+在写任务中， 首先写入除有效标识位之外的 Block 头， 随后写入数据段， 最后写入 Block 有效标识位。
+
+若在写任务中异常下电， Block 头中的有效标识位未成功写入， 重新上电执行完扫描任务后， 认为该 Block无效， 无法成功读取该 Block 的数据， Fee 向上层返回的结果为 MEMIF_BLOCK_INCONSISTENT。
 
 
+EA 模块
+由于EEP 是可以支持直接写入的，因此存储在Eep的Block地址都是固定的，Ea 模块为
 
+EEPROM 硬件抽象层， 通过访问下层 Eep 模块提供的 API 操作 EEPROM 硬件， EEPROM 具有如下物理特性：
 
+可按字节写入。
+写入前不需执行数据擦除操作。
+由于 EEPROM 具有如上特性， Ea 可为每个 Block 确定具体的硬件存储地址并划分存储空间， NvM 在执行读/写等服务时， 通过 Ea 完成相应 Block 的地址映射即可操作 EEPROM 硬件中数据
+1. EA 地址管理
 
+通过获取 NvM Block 的类型、 长度等配置， Ea 按照各 Block 的长度为其分配地址空间， 从 0 地址起依次向后排列。
+
+2. EA Block 写入管理
+Ea Block 中包含块状态标识位， 该标识位会存入 Eeprom 中， 通过该字段可以判断当前 Block 是否有效。在读任务若发现标识位为无效的状态， 则直接向上层返回 MEMIF_BLOCK_INVALID 失败状态；若发现标识位不为有效/无效值， 则直接向上层返回 MEMIF_BLOCK_INCONSISTENT 失败状态。
 
 
